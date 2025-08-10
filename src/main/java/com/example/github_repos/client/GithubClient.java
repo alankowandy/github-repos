@@ -11,7 +11,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
-import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.util.List;
 
 @Service
