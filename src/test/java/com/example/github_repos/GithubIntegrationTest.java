@@ -1,65 +1,80 @@
 package com.example.github_repos;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.tomakehurst.wiremock.WireMockServer;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import com.example.github_repos.client.GithubClient;
+import com.example.github_repos.client.model.GithubBranch;
+import com.example.github_repos.client.model.GithubRepo;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.web.client.RestTemplate;
 
-import static com.github.tomakehurst.wiremock.client.WireMock.*;
-import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import java.util.List;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
+import static org.springframework.http.HttpMethod.GET;
+
+@SpringBootTest
 class GithubIntegrationTest {
 
-    private static WireMockServer wireMockServer;
+    @Autowired
+    private RestTemplate restTemplate;
 
-    @BeforeAll
-    static void beforeAll() {
-        wireMockServer = new WireMockServer(0); // 0 = random port
-        wireMockServer.start();
-    }
+    @Autowired
+    private GithubClient githubClient;
 
-    @AfterAll
-    static void afterAll() {
-        wireMockServer.stop();
-    }
+    private MockRestServiceServer mockServer;
 
-    @DynamicPropertySource
-    static void registerProps(DynamicPropertyRegistry registry) {
-        registry.add("github.api.url", () -> "http://localhost:" + wireMockServer.port());
+    @BeforeEach
+    void setUp() {
+        mockServer = MockRestServiceServer.createServer(restTemplate);
     }
 
     @Test
     void happyPathTest() {
-        wireMockServer.stubFor(get(urlEqualTo("/users/testuser/repos"))
-                .willReturn(okJson("""
-                        [
-                          {
-                            "name": "repo1",
-                            "html_url": "https://github.com/testuser/repo1"
-                          },
-                          {
-                            "name": "repo2",
-                            "html_url": "https://github.com/testuser/repo2"
-                          }
-                        ]
-                        """)));
+        String reposJson = """
+            [
+              {"name": "my-repo", "owner": {"login": "octocat"}, "fork": false},
+              {"name": "another-repo", "owner": {"login": "octocat"}, "fork": false}
+            ]
+        """;
+        mockServer.expect(requestTo("https://api.github.com/users/octocat/repos"))
+                .andExpect(method(GET))
+                .andRespond(withSuccess(reposJson, MediaType.APPLICATION_JSON));
 
-        // when – wywołanie naszego API (np. RestTemplate lub TestRestTemplate)
-        var restTemplate = new org.springframework.boot.test.web.client.TestRestTemplate();
-        var response = restTemplate.getForEntity(
-                "http://localhost:8080/repos/testuser", String.class);
+        String branchesMyRepo = """
+            [
+              {"name": "main", "commit": {"sha": "abc123"}},
+              {"name": "dev", "commit": {"sha": "def456"}}
+            ]
+        """;
+        mockServer.expect(requestTo("https://api.github.com/repos/octocat/my-repo/branches"))
+                .andExpect(method(GET))
+                .andRespond(withSuccess(branchesMyRepo, MediaType.APPLICATION_JSON));
 
-        // then – weryfikacja treści
-        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
-        assertThat(response.getBody()).contains("repo1").contains("repo2");
+        String branchesAnother = """
+            [
+              {"name": "main", "commit": {"sha": "789ghi"}}
+            ]
+        """;
+        mockServer.expect(requestTo("https://api.github.com/repos/octocat/another-repo/branches"))
+                .andExpect(method(GET))
+                .andRespond(withSuccess(branchesAnother, MediaType.APPLICATION_JSON));
+
+        List<GithubRepo> repos = githubClient.getGithubRepos("octocat");
+        List<GithubBranch> repo1Branches = githubClient.listGithubBranches("octocat", "my-repo");
+        List<GithubBranch> repo2Branches = githubClient.listGithubBranches("octocat", "another-repo");
+
+        assertThat(repos).hasSize(2);
+        assertThat(repo1Branches).extracting(GithubBranch::name)
+                .containsExactly("main", "dev");
+        assertThat(repo2Branches).extracting(GithubBranch::commit)
+                .extracting(GithubBranch.Commit::sha)
+                .containsExactly("789ghi");
     }
 }
